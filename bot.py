@@ -1,5 +1,9 @@
+import os
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# ===== TOKEN (CHO RENDER) =====
+TOKEN = os.getenv("TOKEN")
 
 user_data = {}
 
@@ -36,34 +40,18 @@ def tinh_lai(luong, kv, ct):
     else:
         return base[3]
 
-# ===== MUE =====
+# ===== MỨC VAY =====
 def tinh_mue(luong, kv, ct):
     if kv == "tp":
         if ct == "ps":
-            if luong < 6:
-                hs = 6
-            elif luong < 12:
-                hs = 10
-            else:
-                hs = 12
+            hs = 6 if luong < 6 else 10 if luong < 12 else 12
         else:
-            if luong < 6:
-                hs = 6
-            elif luong < 12:
-                hs = 8
-            else:
-                hs = 10
+            hs = 6 if luong < 6 else 8 if luong < 12 else 10
     else:
         if ct == "ps":
-            if luong < 6:
-                hs = 6
-            else:
-                hs = 10
+            hs = 6 if luong < 6 else 10
         else:
-            if luong < 9:
-                hs = 6
-            else:
-                hs = 8
+            hs = 6 if luong < 9 else 8
 
     return round(luong * hs, 0)
 
@@ -72,9 +60,10 @@ def tinh_gop(vay, lai, thang):
     r = lai / 100 / 12
     return int(vay * r / (1 - (1 + r) ** -thang))
 
-# ===== TỔNG =====
+# ===== TÍNH TỔNG =====
 def tinh_all(luong, kv, ct, dc=None):
     lai = tinh_lai(luong, kv, ct)
+
     if dc == "han":
         lai -= 1
 
@@ -136,10 +125,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data.setdefault(uid, {})
 
-    try:
-        await query.answer()
-    except:
-        pass
+    await query.answer()
 
     if data == "tls":
         user_data[uid] = {}
@@ -150,13 +136,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("kv_"):
         user_data[uid]["kv"] = data.split("_")[1]
 
-    if data.startswith("ct_"):
+    elif data.startswith("ct_"):
         user_data[uid]["ct"] = data.split("_")[1]
 
-    if data.startswith("dc_"):
+    elif data.startswith("dc_"):
         user_data[uid]["dc"] = data.split("_")[1]
 
-    if data == "calc":
+    elif data == "calc":
         d = user_data[uid]
 
         if "luong" not in d or "kv" not in d or "ct" not in d:
@@ -167,7 +153,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(msg)
         return
 
-    # 👉 CHỈ UPDATE MENU (KHÔNG NHẢY)
     text, markup = build_menu(uid)
     await query.message.edit_text(text, reply_markup=markup)
 
@@ -182,7 +167,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             luong /= 1000000
 
         user_data.setdefault(uid, {})
-        user_data[uid]["luong"] = round(luong,2)
+        user_data[uid]["luong"] = round(luong, 2)
 
         text, markup = build_menu(uid)
         await update.message.reply_text(text, reply_markup=markup)
@@ -191,11 +176,15 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nhập số: 18 / 18.5 / 18000000")
 
 # ===== RUN =====
-app = ApplicationBuilder().token("8574986735:AAEvS9nHrAnfxsObkRrRlad-qhOE5Nu-ABQ").build()
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-print("BOT OK")
-app.run_polling()
+    print("BOT ĐANG CHẠY...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
