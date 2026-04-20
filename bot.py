@@ -1,286 +1,214 @@
-import os
-import sqlite3
-import zipfile
-from datetime import datetime
-
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-from reportlab.platypus import SimpleDocTemplate, Image
 from docx import Document
+from reportlab.platypus import SimpleDocTemplate, Image
+from PIL import Image as PILImage
+import pytesseract
+import zipfile
+import os
+import re
+from datetime import datetime
 
-# ===== TOKEN =====
-TOKEN = os.getenv("TOKEN")
+# OCR
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-# ===== DB =====
-conn = sqlite3.connect("data.db", check_same_thread=False)
-c = conn.cursor()
-
-c.execute("""CREATE TABLE IF NOT EXISTS customers (
-    phone TEXT PRIMARY KEY,
-    name TEXT,
-    cccd TEXT,
-    salary REAL
-)""")
-
-c.execute("""CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone TEXT,
-    type TEXT,
-    file_id TEXT
-)""")
-
-conn.commit()
+TOKEN = "DAN_TOKEN_VAO_DAY"
 
 user_data = {}
-
-# ================= TLS =================
-
-def tinh_lai(luong, kv, ct):
-    if luong <= 8: base = [42,46,47,49]
-    elif luong <= 10: base = [40.5,44.5,45.5,49]
-    elif luong <= 13: base = [38.5,42.5,43.5,47]
-    elif luong <= 17: base = [36.5,40.5,41.5,45]
-    elif luong <= 22: base = [34,38.5,39.5,43]
-    elif luong <= 27: base = [30,34,35,39]
-    elif luong <= 33: base = [26.5,30.5,31.5,35]
-    else: base = [19,25.5,26.5,30]
-
-    if kv == "tp" and ct == "ps": return base[0]
-    elif kv == "tp": return base[1]
-    elif ct == "ps": return base[2]
-    else: return base[3]
-
-def tinh_mue(luong, kv, ct):
-    if kv == "tp":
-        hs = 6 if luong < 6 else 10 if luong < 12 else 12
-    else:
-        hs = 6 if luong < 9 else 8
-    return round(luong * hs, 0)
-
-def tinh_gop(vay, lai, thang):
-    r = lai / 100 / 12
-    return int(vay * r / (1 - (1 + r) ** -thang))
-
-# ================= MENU =================
-
-def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 TLS", callback_data="tls")],
-        [InlineKeyboardButton("👤 KHÁCH HÀNG", callback_data="cus")],
-        [InlineKeyboardButton("📄 THƯ XÁC NHẬN", callback_data="txn")]
-    ])
-
-def doc_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("CCCD", callback_data="doc_CCCD")],
-        [InlineKeyboardButton("VNEID", callback_data="doc_VNEID")],
-        [InlineKeyboardButton("LƯƠNG", callback_data="doc_LUONG")],
-        [InlineKeyboardButton("VSSID", callback_data="doc_VSSID")],
-        [InlineKeyboardButton("SF", callback_data="doc_SF")],
-        [InlineKeyboardButton("OTHER", callback_data="doc_OTHER")],
-        [InlineKeyboardButton("📄 Xuất PDF", callback_data="export")]
-    ])
+REQUIRED_DOCS = ["cccd","vneid","luong","vssid","sf","other"]
 
 # ================= START =================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("MENU:", reply_markup=main_menu())
+    kb = [
+        [InlineKeyboardButton("📊 TÍNH LÃI", callback_data="tls")],
+        [InlineKeyboardButton("📄 THƯ XÁC NHẬN", callback_data="form")],
+        [InlineKeyboardButton("📂 GIẤY TỜ", callback_data="docs")]
+    ]
+    await update.message.reply_text("Chọn:", reply_markup=InlineKeyboardMarkup(kb))
+
+# ================= TLS =================
+def tinh_lai(luong):
+    if luong <= 10: return 45
+    elif luong <= 20: return 40
+    return 35
+
+# ================= DBR =================
+def tinh_dbr(luong, kv, no):
+    max_dbr = 0.5 if kv=="tp" else 0.6
+    con = luong*max_dbr - no
+    vay = int(con*15)
+    return round(no/luong*100), int(vay)
+
+# ================= OCR =================
+def ocr_image(path):
+    return pytesseract.image_to_string(PILImage.open(path))
+
+# ================= PDF =================
+def tao_pdf(docs, context, uid):
+    files=[]
+    for loai,fid in docs.items():
+        file=context.bot.get_file(fid)
+        img=f"{uid}_{loai}.jpg"
+        file.download(img)
+
+        pdf=f"{uid}_{loai}.pdf"
+        SimpleDocTemplate(pdf).build([Image(img,400,500)])
+        files.append(pdf)
+
+        try: os.remove(img)
+        except: pass
+
+    zipf=f"{uid}.zip"
+    with zipfile.ZipFile(zipf,'w') as z:
+        for f in files: z.write(f)
+
+    for f in files:
+        try: os.remove(f)
+        except: pass
+
+    return zipf
+
+# ================= FORM =================
+def tao_form(data, uid):
+    doc=Document()
+    now=datetime.now()
+
+    doc.add_paragraph(f"Tên: {data.get('ten','')}")
+    doc.add_paragraph(f"CCCD: {data.get('cccd','')}")
+    doc.add_paragraph(f"Ngày cấp: {data.get('ngay','')}")
+    doc.add_paragraph(f"Nơi cấp: {data.get('noicap','')}")
+    doc.add_paragraph(f"Địa chỉ: {data.get('dc','')}")
+
+    doc.add_paragraph(f"\nNgày {now.day} tháng {now.month} năm {now.year}")
+
+    path=f"{uid}_form.docx"
+    doc.save(path)
+    return path
 
 # ================= BUTTON =================
-
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-    data = query.data
+    q=update.callback_query
+    uid=q.from_user.id
+    data=q.data
 
-    user_data.setdefault(uid, {})
-    await query.answer()
+    user_data.setdefault(uid,{})
+    await q.answer()
 
-    # TLS
-    if data == "tls":
-        user_data[uid]["step"] = "tls_luong"
-        await query.message.reply_text("Nhập lương (18.5 hoặc 18500000 đều được):")
+    if data=="tls":
+        user_data[uid]["step"]="luong"
+        await q.message.reply_text("Nhập lương:")
         return
 
-    if data.startswith("kv_"):
-        user_data[uid]["kv"] = data.split("_")[1]
-
-    elif data.startswith("ct_"):
-        user_data[uid]["ct"] = data.split("_")[1]
-
-    elif data == "calc":
-        d = user_data[uid]
-
-        lai = tinh_lai(d["luong"], d["kv"], d["ct"])
-        mue = tinh_mue(d["luong"], d["kv"], d["ct"])
-
-        vay = int(mue * 0.8) * 1000000
-
-        msg = f"""📊 KẾT QUẢ
-Lãi: {lai}%
-Hạn mức: {mue}tr
-
-12T: {tinh_gop(vay,lai,12):,}
-24T: {tinh_gop(vay,lai,24):,}
-36T: {tinh_gop(vay,lai,36):,}
-48T: {tinh_gop(vay,lai,48):,}
-"""
-        await query.message.reply_text(msg)
+    if data=="form":
+        user_data[uid]["step"]="form"
+        await q.message.reply_text("Nhập:\nTên\nCCCD\nNgày cấp\nNơi cấp\nĐịa chỉ")
         return
 
-    # KHÁCH
-    if data == "cus":
-        user_data[uid]["step"] = "input_cus"
-        await query.message.reply_text("Nhập:\nTên\nSĐT\nCCCD\nLương")
+    if data=="docs":
+        kb=[[InlineKeyboardButton(x.upper(),callback_data=f"doc_{x}")] for x in REQUIRED_DOCS]
+        kb.append([InlineKeyboardButton("CHECK",callback_data="check")])
+        kb.append([InlineKeyboardButton("PDF",callback_data="pdf")])
+        kb.append([InlineKeyboardButton("SCAN",callback_data="scan")])
+        await q.message.reply_text("Chọn:",reply_markup=InlineKeyboardMarkup(kb))
         return
 
     if data.startswith("doc_"):
-        user_data[uid]["doc_type"] = data.split("_")[1]
-        user_data[uid]["step"] = "upload"
-        await query.message.reply_text("Gửi ảnh")
+        user_data[uid]["doc"]=data.split("_")[1]
+        user_data[uid]["step"]="upload"
+        await q.message.reply_text("Gửi ảnh")
         return
 
-    if data == "export":
-        phone = user_data[uid]["phone"]
-
-        c.execute("SELECT type,file_id FROM documents WHERE phone=?", (phone,))
-        rows = c.fetchall()
-
-        files = []
-
-        for t,fid in rows:
-            file = await context.bot.get_file(fid)
-            path = f"{fid}.jpg"
-            await file.download_to_drive(path)
-
-            pdf = f"{t}.pdf"
-            doc = SimpleDocTemplate(pdf)
-            doc.build([Image(path)])
-
-            files.append(pdf)
-            await query.message.reply_document(open(pdf,"rb"))
-
-        zip_name = f"{phone}.zip"
-        with zipfile.ZipFile(zip_name,"w") as z:
-            for f in files:
-                z.write(f)
-
-        await query.message.reply_document(open(zip_name,"rb"))
+    if data=="check":
+        docs=user_data[uid].get("docs",{})
+        txt="\n".join([f"{'✅' if d in docs else '❌'} {d}" for d in REQUIRED_DOCS])
+        await q.message.reply_text(txt)
         return
 
-    # TXN
-    if data == "txn":
-        user_data[uid]["step"] = "txn_input"
-        await query.message.reply_text("Nhập:\nTên\nCCCD\nNgày cấp\nNơi cấp\nĐịa chỉ")
+    if data=="pdf":
+        docs=user_data[uid].get("docs",{})
+        zipf=tao_pdf(docs,context,uid)
+        await q.message.reply_document(open(zipf,"rb"))
+        try: os.remove(zipf)
+        except: pass
         return
 
-# ================= TEXT =================
+    if data=="scan":
+        docs=user_data[uid].get("docs",{})
+        text=""
+        for loai,fid in docs.items():
+            file=context.bot.get_file(fid)
+            path=f"{uid}_{loai}.jpg"
+            file.download(path)
+            text+=ocr_image(path)
+            try: os.remove(path)
+            except: pass
 
+        cccd=re.search(r"\d{9,12}",text)
+        await q.message.reply_text(f"CCCD: {cccd.group() if cccd else 'không rõ'}")
+        return
+
+# ================= HANDLE TEXT =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    txt = update.message.text
+    uid=update.message.from_user.id
+    txt=update.message.text
+    step=user_data.get(uid,{}).get("step")
 
-    # TLS
-    if user_data.get(uid, {}).get("step") == "tls_luong":
-        try:
-            luong = float(txt.replace(",", "."))
-            if luong > 1000:
-                luong /= 1000000
-
-            user_data[uid]["luong"] = luong
-
-            keyboard = [
-                [InlineKeyboardButton("TP", callback_data="kv_tp"),
-                 InlineKeyboardButton("Tỉnh", callback_data="kv_tinh")],
-                [InlineKeyboardButton("PS", callback_data="ct_ps"),
-                 InlineKeyboardButton("NON", callback_data="ct_non")],
-                [InlineKeyboardButton("TÍNH", callback_data="calc")]
-            ]
-
-            await update.message.reply_text("Chọn:", reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
-            await update.message.reply_text("Nhập số")
+    if step=="luong":
+        luong=float(txt)
+        user_data[uid]["luong"]=luong
+        user_data[uid]["step"]="no"
+        await update.message.reply_text("Nhập nợ:")
         return
 
-    # KHÁCH
-    if user_data.get(uid, {}).get("step") == "input_cus":
-        lines = txt.split("\n")
+    if step=="no":
+        no=float(txt)
+        luong=user_data[uid]["luong"]
+        dbr,vay=tinh_dbr(luong,"tp",no)
 
-        if len(lines) < 4:
-            await update.message.reply_text("Nhập đủ 4 dòng")
-            return
-
-        name = lines[0]
-        phone = lines[1]
-        cccd = lines[2]
-        salary = float(lines[3])
-
-        c.execute("INSERT OR REPLACE INTO customers VALUES (?,?,?,?)",
-                  (phone,name,cccd,salary))
-        conn.commit()
-
-        user_data[uid]["phone"] = phone
-
-        await update.message.reply_text("Đã lưu\nGửi hồ sơ:", reply_markup=doc_menu())
+        kb=[[InlineKeyboardButton("📂 GIẤY TỜ",callback_data="docs")]]
+        await update.message.reply_text(f"DBR: {dbr}%\nVay: {vay}tr",reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    # TXN
-    if user_data.get(uid, {}).get("step") == "txn_input":
-        lines = txt.split("\n")
-
-        if len(lines) < 5:
+    if step=="form":
+        lines=txt.split("\n")
+        if len(lines)<5:
             await update.message.reply_text("Nhập đủ 5 dòng")
             return
 
-        ten, cccd, ngaycap, noicap, diachi = lines
+        data={
+            "ten":lines[0],
+            "cccd":lines[1],
+            "ngay":lines[2],
+            "noicap":lines[3],
+            "dc":lines[4]
+        }
 
-        doc = Document()
-        now = datetime.now()
+        path=tao_form(data,uid)
+        await update.message.reply_document(open(path,"rb"))
 
-        doc.add_paragraph(f"Tôi là: {ten}")
-        doc.add_paragraph(f"CCCD: {cccd}")
-        doc.add_paragraph(f"Ngày cấp: {ngaycap} tại {noicap}")
-        doc.add_paragraph(f"Địa chỉ: {diachi}")
-        doc.add_paragraph(f"Ngày {now.day}/{now.month}/{now.year}")
-        doc.add_paragraph(ten)
-
-        file = f"{ten}.docx"
-        doc.save(file)
-
-        await update.message.reply_document(open(file,"rb"))
-        return
+        try: os.remove(path)
+        except: pass
 
 # ================= PHOTO =================
-
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
+    uid=update.message.from_user.id
 
-    if user_data.get(uid, {}).get("step") != "upload":
-        return
+    if user_data.get(uid,{}).get("step")=="upload":
+        fid=update.message.photo[-1].file_id
+        loai=user_data[uid]["doc"]
 
-    phone = user_data[uid]["phone"]
-    doc_type = user_data[uid]["doc_type"]
-    file_id = update.message.photo[-1].file_id
+        user_data[uid].setdefault("docs",{})
+        user_data[uid]["docs"][loai]=fid
 
-    c.execute("INSERT INTO documents(phone,type,file_id) VALUES (?,?,?)",
-              (phone,doc_type,file_id))
-    conn.commit()
-
-    await update.message.reply_text("Đã lưu")
+        await update.message.reply_text(f"Đã lưu {loai}")
 
 # ================= RUN =================
+app=ApplicationBuilder().token(TOKEN).build()
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start",start))
+app.add_handler(CallbackQueryHandler(button))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle))
+app.add_handler(MessageHandler(filters.PHOTO,photo))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.add_handler(MessageHandler(filters.PHOTO, photo))
-
-    print("RUNNING...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+app.run_polling()
