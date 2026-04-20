@@ -1,4 +1,5 @@
 python-telegram-bot
-reportlab
 python-docx
+reportlab
+pytesseract
 Pillow
