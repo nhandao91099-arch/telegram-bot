@@ -1,41 +1,23 @@
-# ================= IMPORT =================
+import os, zipfile
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-
-from datetime import datetime
-from docx import Document
 from reportlab.platypus import SimpleDocTemplate, Image
-from PIL import Image as PILImage
 
-import os, json, zipfile, re
-
-# ================= TOKEN =================
 TOKEN = os.environ.get("BOT_TOKEN")
 
-# ================= DATA =================
 user_data = {}
 customers = {}
 
-REQUIRED_DOCS = ["cccd", "vneid", "vssid", "luong", "sf", "other"]
+DOC_TYPES = ["cccd","vneid","vssid","luong","sf","other"]
 
-# ================= TLS (GIỮ NGUYÊN) =================
+# ================= TLS =================
 def tinh_lai(luong, kv, ct):
     if luong <= 8:
         base = [42,46,47,49]
     elif luong <= 10:
         base = [40.5,44.5,45.5,49]
-    elif luong <= 13:
-        base = [38.5,42.5,43.5,47]
-    elif luong <= 17:
-        base = [36.5,40.5,41.5,45]
-    elif luong <= 22:
-        base = [34,38.5,39.5,43]
-    elif luong <= 27:
-        base = [30,34,35,39]
-    elif luong <= 33:
-        base = [26.5,30.5,31.5,35]
     else:
-        base = [19,25.5,26.5,30]
+        base = [38.5,42.5,43.5,47]
 
     if kv == "tp" and ct == "ps":
         return base[0]
@@ -45,6 +27,24 @@ def tinh_lai(luong, kv, ct):
         return base[2]
     else:
         return base[3]
+
+def build_tls(uid):
+    d = user_data.get(uid, {})
+    text = f"""📊 TLS
+
+💰 Lương: {d.get("luong","❓")}
+📍 KV: {d.get("kv","❓")}
+🏢 CT: {d.get("ct","❓")}
+"""
+
+    kb = [
+        [InlineKeyboardButton("🏙 TP","kv_tp"),
+         InlineKeyboardButton("🌆 Tỉnh","kv_tinh")],
+        [InlineKeyboardButton("🏢 PS","ct_ps"),
+         InlineKeyboardButton("🏭 NON","ct_non")],
+        [InlineKeyboardButton("✅ TÍNH","calc")]
+    ]
+    return text, InlineKeyboardMarkup(kb)
 
 # ================= DBR =================
 def tinh_dbr(luong, ct, no):
@@ -57,145 +57,184 @@ def tinh_dbr(luong, ct, no):
     con = luong * max_dbr - no
     vay = int(con * 15)
 
-    return round(dbr * 100), vay, int(max_dbr * 100)
+    return round(dbr*100), int(max_dbr*100), vay
+
+# ================= PDF =================
+def img_to_pdf(img, pdf):
+    doc = SimpleDocTemplate(pdf)
+    doc.build([Image(img, width=400, height=500)])
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
-        [InlineKeyboardButton("📊 TLS", callback_data="tls")],
-        [InlineKeyboardButton("📂 HỒ SƠ", callback_data="hoso")],
-        [InlineKeyboardButton("📄 TXN", callback_data="txn")]
+        [InlineKeyboardButton("📊 TLS","tls")],
+        [InlineKeyboardButton("📂 HỒ SƠ","hoso")]
     ]
-    await update.message.reply_text("Chọn chức năng:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Chọn:", reply_markup=InlineKeyboardMarkup(kb))
 
 # ================= BUTTON =================
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-    data = query.data
+    q = update.callback_query
+    uid = q.from_user.id
+    data = q.data
 
     user_data.setdefault(uid, {})
-    await query.answer()
+    await q.answer()
 
-    # ===== TLS =====
-    if data == "tls":
-        user_data[uid]["step"] = "tls_luong"
-        await query.message.reply_text("Nhập lương:")
+    # TLS
+    if data=="tls":
+        user_data[uid]={}
+        user_data[uid]["step"]="luong"
+        await q.message.reply_text("Nhập lương:")
         return
 
-    if data == "dbr":
-        user_data[uid]["step"] = "dbr_no"
-        await query.message.reply_text("Nhập nợ hàng tháng:")
-        return
+    if data.startswith("kv_"):
+        user_data[uid]["kv"]=data.split("_")[1]
 
-    if data == "hoso":
-        kb = [
-            [InlineKeyboardButton("➕ NEW", callback_data="new_kh")],
-            [InlineKeyboardButton("🔍 CHECK", callback_data="check_kh")]
+    if data.startswith("ct_"):
+        user_data[uid]["ct"]=data.split("_")[1]
+
+    if data=="calc":
+        d=user_data[uid]
+        lai=tinh_lai(d["luong"],d["kv"],d["ct"])
+        await q.message.reply_text(f"📊 Lãi suất: {lai}%")
+
+        kb=[
+            [InlineKeyboardButton("📊 DBR","dbr")],
+            [InlineKeyboardButton("🔁 TLS lại","tls")],
+            [InlineKeyboardButton("❌ Bỏ qua","skip")]
         ]
-        await query.message.reply_text("Hồ sơ:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.message.reply_text("Tiếp:", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data == "new_kh":
-        user_data[uid]["step"] = "new_kh"
-        await query.message.reply_text("Nhập:\nTên:\nCCCD:\nSDT:\nĐịa chỉ:\nLương:")
+    if data=="dbr":
+        user_data[uid]["step"]="no"
+        await q.message.reply_text("Nhập nợ hàng tháng:")
         return
 
-    if data == "check_kh":
-        user_data[uid]["step"] = "search_kh"
-        await query.message.reply_text("Nhập tên / sdt / cccd:")
-        return
-
-    if data == "export":
-        kb = [
-            [InlineKeyboardButton("📦 ZIP", callback_data="zip")],
-            [InlineKeyboardButton("📄 OCR FORM", callback_data="ocr_form")]
+    # HỒ SƠ
+    if data=="hoso":
+        kb=[
+            [InlineKeyboardButton("➕ NEW","new")],
+            [InlineKeyboardButton("🔍 CHECK","check")]
         ]
-        await query.message.reply_text("Xuất:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.message.reply_text("Hồ sơ:", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data == "txn":
-        user_data[uid]["step"] = "txn_search"
-        await query.message.reply_text("Nhập tên / sdt / cccd:")
+    if data=="new":
+        user_data[uid]["step"]="new"
+        await q.message.reply_text("Tên:\nCCCD:\nSDT:\nĐịa chỉ:\nLương:")
         return
 
-# ================= HANDLE TEXT =================
+    if data=="check":
+        user_data[uid]["step"]="search"
+        await q.message.reply_text("Nhập tên/cccd/sdt:")
+        return
+
+    if data.startswith("doc_"):
+        user_data[uid]["doc_type"]=data.split("_")[1]
+        user_data[uid]["step"]="upload"
+        user_data[uid]["last_photos"]=[]
+        await q.message.reply_text("Gửi ảnh xong bấm lại loại giấy tờ")
+        return
+
+    if data=="done_upload":
+        await q.message.reply_text("Đã xong upload")
+        return
+
+    if data=="export_zip":
+        kh=customers[user_data[uid]["current"]]
+        files=[]
+        for k,arr in kh["docs"].items():
+            for i,fid in enumerate(arr):
+                file=context.bot.get_file(fid)
+                img=f"{uid}_{k}_{i}.jpg"
+                file.download(img)
+
+                pdf=f"{uid}_{k}_{i}.pdf"
+                img_to_pdf(img,pdf)
+                files.append(pdf)
+                os.remove(img)
+
+        zipname=f"{uid}.zip"
+        with zipfile.ZipFile(zipname,'w') as z:
+            for f in files:
+                z.write(f)
+
+        await q.message.reply_document(open(zipname,"rb"))
+
+        for f in files+[zipname]:
+            os.remove(f)
+        return
+
+# ================= HANDLE =================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    txt = update.message.text
+    uid=update.message.from_user.id
+    txt=update.message.text
+    step=user_data.get(uid,{}).get("step")
 
-    step = user_data.get(uid, {}).get("step")
-
-    # ===== TLS =====
-    if step == "tls_luong":
-        user_data[uid]["luong"] = float(txt)
-        user_data[uid]["step"] = "tls_kv"
-        await update.message.reply_text("KV (tp/tinh):")
+    if step=="luong":
+        user_data[uid]["luong"]=float(txt)
+        text,markup=build_tls(uid)
+        await update.message.reply_text(text, reply_markup=markup)
         return
 
-    if step == "tls_kv":
-        user_data[uid]["kv"] = txt
-        user_data[uid]["step"] = "tls_ct"
-        await update.message.reply_text("CT (ps/non):")
-        return
+    if step=="no":
+        d=user_data[uid]
+        dbr,maxd,vay=tinh_dbr(d["luong"],d["ct"],float(txt))
+        await update.message.reply_text(f"DBR:{dbr}% | Max:{maxd}% | Vay thêm:{vay}tr")
 
-    if step == "tls_ct":
-        user_data[uid]["ct"] = txt
-
-        d = user_data[uid]
-        lai = tinh_lai(d["luong"], d["kv"], d["ct"])
-
-        await update.message.reply_text(f"Lãi: {lai}%")
-
-        kb = [[InlineKeyboardButton("📊 DBR", callback_data="dbr")]]
+        kb=[
+            [InlineKeyboardButton("💾 Lưu khách","save")],
+            [InlineKeyboardButton("📂 Hồ sơ","hoso")],
+            [InlineKeyboardButton("🔁 TLS","tls")]
+        ]
         await update.message.reply_text("Tiếp:", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    # ===== DBR =====
-    if step == "dbr_no":
-        d = user_data[uid]
-        no = float(txt)
-
-        dbr, vay, maxd = tinh_dbr(d["luong"], d["ct"], no)
-
-        await update.message.reply_text(f"DBR: {dbr}%\nMax: {maxd}%\nVay thêm: {vay}tr")
-        return
-
-    # ===== NEW KH =====
-    if step == "new_kh":
-        lines = txt.split("\n")
-        data = {
-            "ten": lines[0].split(":")[1].strip(),
-            "cccd": lines[1].split(":")[1].strip(),
-            "sdt": lines[2].split(":")[1].strip(),
-            "diachi": lines[3].split(":")[1].strip(),
-            "luong": lines[4].split(":")[1].strip(),
-            "docs": {}
+    if step=="new":
+        lines=txt.split("\n")
+        data={
+            "ten":lines[0],
+            "cccd":lines[1],
+            "sdt":lines[2],
+            "diachi":lines[3],
+            "luong":lines[4],
+            "docs":{k:[] for k in DOC_TYPES}
         }
-        customers[data["cccd"]] = data
+        customers[data["cccd"]]=data
+        user_data[uid]["current"]=data["cccd"]
 
-        await update.message.reply_text("Đã lưu khách")
+        kb=[[InlineKeyboardButton("📎 Upload giấy tờ","upload")]]
+        await update.message.reply_text("Đã lưu khách", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    # ===== SEARCH =====
-    if step == "search_kh":
+    if step=="search":
         for k,v in customers.items():
-            if txt in v["ten"] or txt in v["cccd"] or txt in v["sdt"]:
-                user_data[uid]["current"] = k
-
-                kb = [[InlineKeyboardButton("📤 Xuất", callback_data="export")]]
-                await update.message.reply_text(f"Tên: {v['ten']}", reply_markup=InlineKeyboardMarkup(kb))
+            if txt in k or txt in v["ten"] or txt in v["sdt"]:
+                user_data[uid]["current"]=k
+                kb=[
+                    [InlineKeyboardButton("👁 Xem","view")],
+                    [InlineKeyboardButton("📤 ZIP","export_zip")]
+                ]
+                await update.message.reply_text(v["ten"], reply_markup=InlineKeyboardMarkup(kb))
                 return
+        await update.message.reply_text("Không thấy")
 
-        await update.message.reply_text("Không tìm thấy")
-        return
+# ================= PHOTO =================
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid=update.message.from_user.id
+
+    if "last_photos" in user_data.get(uid,{}):
+        user_data[uid]["last_photos"].append(update.message.photo[-1].file_id)
 
 # ================= RUN =================
-app = ApplicationBuilder().token(TOKEN).build()
+app=ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+app.add_handler(MessageHandler(filters.PHOTO, photo))
 
 print("BOT RUNNING")
 app.run_polling()
